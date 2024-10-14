@@ -1,4 +1,5 @@
 <?php
+
 // I used https://datatracker.ietf.org/doc/html/rfc4287 to help build this
 
 // Oh boy....
@@ -26,9 +27,11 @@ class atomFeed {
 	private $extensions = array();	// this will just be an array of nodes
 	private $base = null;
 	private $lang = null;
+	private $xml = null;
+	private $maxEntries = 0;
 	private $logging = false;
 	private $doIt = true;
-	private $version = "0.1.0-b1";
+	private $version = "0.1.1";
 	
 	static function getMetas() {
 		return array("author", "category", "contributor", "generator", "icon", "id", "link", "logo", "rights", "subtitle", "title", "updated");	// Future version:  Add Extension stuff
@@ -73,8 +76,12 @@ class atomFeed {
 					$this->xml->load($loc);
 				} else {
 					// I don't know what to do here.  Throw an exception?
+					// No...if It's a file location, might as well create the file
+					/*
 					$rv = false;
 					throw new RuntimeException("Tried to load file that does not exist");
+					*/
+					$this->xml->loadXML("<?xml version=\"1.0\" encoding=\"UTF-8\"?><feed></feed>");
 				}
 			}
 		} else {
@@ -265,7 +272,8 @@ class atomFeed {
 	function getSubtitle () {return $this->subtitle->getContent();}
 	function getSubtitleObj () { return $this->subtitle;}
 
-	function setUpdated ($t, $b=null, $l=null) {
+	function setUpdated ($t=null, $b=null, $l=null) {
+		if (!$t) $t = $this->getAtomTime();
 		$this->updated = new atomDate($t, $b, $l);
 	} // End of setUpdated
 	function getUpdated () {return $this->updated->getContent();}
@@ -276,7 +284,7 @@ class atomFeed {
 	} // End of setGenerator
 	function getGenerator () {return $this->generator;}
 
-	function addCategory ($t, $s=null, $lbl=null, $b, $l) {
+	function addCategory ($t, $s=null, $lbl=null, $b=null, $l=null) {
 		$t = trim($t);
 		if (preg_match("/^\w+$/", $t)) {
 			$cat = new atomCategory($t, $s, $l, $b, $l);
@@ -286,11 +294,14 @@ class atomFeed {
 	function getCategories () { return $this->categories; }
 
 	function addAuthor ($n, $e=null, $i=null, $b=null, $l=null) {
-		array_push($this->author, new atomPerson($n, $e, $i));
+		array_push($this->author, new atomPerson($n, $e, $i, $b, $l));
+		// You should do an "isthere" thing so you don't add the same author twice.
+		// Also, allow for being passed a person object
 	} // End of addAuthor
 	function getAuthors() { return $this->author;}
 
 	function addContributor ($n, $e=null, $i=null, $b=null, $l=null) {
+		// Allow for being passed a person object.
 		$n = trim($n);
 		$isThere = false;
 		$contributors = $this->getContributors();
@@ -312,13 +323,42 @@ class atomFeed {
 				$eid = $e->getID();
 			}
 		}
-		if ($eid) $this->entries[$eid] = $e; // Should this be associative, or not?
+		if ($eid) $this->entries[$eid] = $e;
+		if ($this->maxEntries >0) {
+			if ($this->getNumOfEntries() > $this->maxEntries) {
+				// Okay....do we remove the first or last?
+				$offendingEntryID= array_key_first($this->entries);
+				$this->removeEntry($offendingEntryID);
+			}
+		}
 	} // End of addEntry
+	function getEntriesAsArray () {
+		return array_values($this->entries);
+	} // End of getEntriesAsArray
 	function getEntries () {return $this->entries;}
 	function clearEntries () { 
 		unset($this->entries);
 		$this->entries = array();
 	} // End of clearEntries
+	function deleteEntry($eid) {
+		if (isset($this->entries[$eid])) {
+			if ($this->logging) print "Removing $eid.<br>\n";
+			unset($this->entries[$eid]);
+		} else {
+			if ($this->logging) print "Not removing $eID.<br>\n";
+		}
+	
+
+	} // End of deleteEntry
+	function removeEntry($eid) {$this->deleteEntry($eid);}
+	function getNumOfEntries () { return count(array_keys($this->entries)); }
+	function getNumberOfEntries() {return $this->getNumOfEntries();}
+	function getEntryByID($id) {
+		$rv = false;
+		if (isset($this->entries[$id])) $rv = $this->entries[$id];
+		return $rv;
+	} // End of getEntryByID
+	
 	
 	function setIcon ($i, $b=null, $l=null) {
 		$this->icon = new atomElement($i, $b, $l);
@@ -623,6 +663,16 @@ class atomFeed {
 	} // End of setBase
 	function getBase () { return $this->base; }
 
+	function getMaxEntries() { return $this->maxEntries;}
+	function setMaxEntries($x) {
+		$x = preg_replace("/\D/", "", $x);
+		if (preg_match("/^\d+$/", $x)) {
+			$this->maxEntries = 0;
+		} else {
+			// error
+		}
+	} // End of setMaxEntries
+
 	function setLang ($l) {
 		if (preg_match("/^[a-z]{2,3}(-[A-Z]{2,3})?$/", $l)) $this->lang = $l;
 	} // End of setLang
@@ -639,14 +689,15 @@ class atomFeed {
 	public static function getAbsolute(string $path): string {
 		// Stolen from https://www.php.net/manual/en/function.realpath.php
 		// Cleaning path regarding OS
-		$path = mb_ereg_replace('\\\\|/', DIRECTORY_SEPARATOR, $path, 'msr');
+		//$path = mb_ereg_replace('\\\\|/', DIRECTORY_SEPARATOR, $path, 'msr');
+		$path = preg_replace("/\\\\|\//", DIRECTORY_SEPARATOR, $path);
 		// Check if path start with a separator (UNIX)
 		$startWithSeparator = $path[0] === DIRECTORY_SEPARATOR;
 		// Check if start with drive letter
 		preg_match('/^[a-z]:/', $path, $matches);
 		$startWithLetterDir = isset($matches[0]) ? $matches[0] : false;
 		// Get and filter empty sub paths
-		$subPaths = array_filter(explode(DIRECTORY_SEPARATOR, $path), 'mb_strlen');
+		$subPaths = array_filter(explode(DIRECTORY_SEPARATOR, $path), 'strlen');
 
 		$absolutes = [];
 		foreach ($subPaths as $subPath) {
@@ -701,7 +752,7 @@ class atomEntry {
 				$this->nodeToEntry($x);
 				$this->xmlDoc = $x->ownerDocument;
 			} else {
-				$this->setID($id);
+				$this->setID($x);
 			}
 		}
 
@@ -793,10 +844,11 @@ class atomEntry {
 	function setID ($id, $b=null, $l=null) {
 		$this->id = new atomElement($id, $b, $l);
 	} // End of setID
+	function hasID() { return ($this->id ? true : false); }
 	function getID () {return $this->id->getContent();}
 	function getIDObj () {return $this->id;}
 
-	function addCategory ($t, $s=null, $lbl=null, $b, $l) {
+	function addCategory ($t, $s=null, $lbl=null, $b=null, $l=null) {
 		$t = trim($t);
 		if (preg_match("/^\w+$/", $t)) {
 			$cat = new atomCategory($t, $s, $lbl, $b, $l);
@@ -851,7 +903,8 @@ class atomEntry {
 	function getSummaryObj () {return $this->summary;}
 
 
-	function setUpdated ($t, $b=null, $l=null) {
+	function setUpdated ($t=null, $b=null, $l=null) {
+		if (!$t) $t = atomFeed::getAtomTime();
 		$this->updated = new atomDate($t. $b, $l);
 	} // End of setUpdated
 	function getUpdated () {return $this->updated->getContent();}
@@ -1139,6 +1192,7 @@ class atomElement {
 	protected $content = null;
 	protected $base = null;
 	protected $lang= null;
+	private $logging=false;
 
 	public function __construct($c=null, $b=null, $l=null) {
 		$this->setContent($c);
@@ -1167,6 +1221,14 @@ class atomElement {
 	} // End of setBase
 	function getBase () { return $this->base; }
 
+	function setLogging($l) {
+		if (is_bool($l)) {
+			$this->logging = $l;
+		}
+	} // End of setLogging
+	function getLogging(){ return $this->logging; }
+
+
 } // End of atomElement
 
 class atomDate extends atomElement {
@@ -1183,14 +1245,16 @@ class atomDate extends atomElement {
 class atomContent extends atomElement {
 	private $type="text";
 	private $src = null;
+	private $logging = false;
 
 	public function __construct($c="", $t="text", $b=null,$l=null) {
 		parent::__construct($c, $b, $l);
-		$this->setType($t);
+		$this->setTyp($t);
 	} // End of __construct
 
-	function setType ($t) {
-		if (preg_match("/^(text|html|xhtml)$/i", $t)) $this->type = $t;
+	function setTyp ($t) {
+		if ($this->logging) print "Gonna set type \$t: $t.<br>\n";
+		if ($t) if (preg_match("/^(text|html|xhtml)$/i", $t)) $this->type = $t;
 	} // End of setType
 	function getType () { return $this->type; }
 
@@ -1198,6 +1262,14 @@ class atomContent extends atomElement {
 		$this->src = $s;
 	} // End of setSrc
 	function getSrc () { return $this->src; }
+
+	function setLogging($l) {
+		if (is_bool($l)) {
+			$this->logging = $l;
+		}
+	} // End of setLogging
+	function getLogging(){ return $this->logging; }
+
 
 
 } // End of atomContent
@@ -1344,7 +1416,7 @@ class atomLink extends atomElement {
 		$this->setHref($h);
 		if ($r) $this->setRel($r);
 		if ($type) $this->setType($type);
-		if ($hl) $this->setHrefLang($hl);
+		if ($hl) $this->setHreflang($hl);
 		if ($title) $this->setTitle($title);
 		if ($len) $this->setLength($len);
 		if ($b) $this->setBase($b);
@@ -1389,4 +1461,3 @@ class atomLink extends atomElement {
 } // End of atomLink
 
 
-?>
